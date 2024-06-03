@@ -1,0 +1,10 @@
+[package]
+name = "netlink-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+inotify = "0.10.2"
+netlink-packet-core = "0.7.0"
+netlink-packet-route = "0.20.0"
+netlink-sys = "0.8.6"

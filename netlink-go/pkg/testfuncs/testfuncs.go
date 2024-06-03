@@ -34,6 +34,7 @@ func NsWatcher() {
 					fmt.Printf("New network namespace detected: %s\n", nsName)
 					fmt.Printf("Starting IntWatcher on namespace: %s\n", nsName)
 					go startIntWatcher(nsName)
+					//go IntWatcher(nsName)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {

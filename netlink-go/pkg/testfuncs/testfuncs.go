@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/vishvananda/netlink"
@@ -21,6 +22,13 @@ func NsWatcher() {
 	defer watcher.Close()
 
 	done := make(chan bool)
+
+	if len(os.Args) >= 2 {
+		namespace := os.Args[1]
+		fmt.Printf("Starting IntWatcher on namespace: %s\n", namespace)
+		go IntWatcher(namespace)
+	}
+
 	go func() {
 		for {
 			select {
@@ -33,8 +41,9 @@ func NsWatcher() {
 					nsName := strings.Split(event.Name, "/")[len(strings.Split(event.Name, "/"))-1]
 					fmt.Printf("New network namespace detected: %s\n", nsName)
 					fmt.Printf("Starting IntWatcher on namespace: %s\n", nsName)
-					go startIntWatcher(nsName)
-					//go IntWatcher(nsName)
+					// go startIntWatcher(nsName)
+					// time.Sleep(30 * time.Second)
+					go IntWatcher(nsName)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -70,27 +79,93 @@ func startIntWatcher(namespace string) {
 	}
 }
 
+func ListLinksInNamespace(nsName string) {
+	// Save the current network namespace
+	origNS, err := netns.Get()
+	if err != nil {
+		fmt.Printf("Failed to get current network namespace: %v\n", err)
+		return
+	}
+	defer origNS.Close()
+
+	// Open the desired network namespace
+	targetNS, err := netns.GetFromPath("/var/run/netns/" + nsName)
+	if err != nil {
+		fmt.Printf("Failed to open target network namespace: %v\n", err)
+		return
+	}
+	defer targetNS.Close()
+
+	// Set the network namespace to the target
+	if err := netns.Set(targetNS); err != nil {
+		fmt.Printf("Failed to set network namespace: %v\n", err)
+		return
+	}
+
+	// Ensure we switch back to the original namespace
+	defer func() {
+		if err := netns.Set(origNS); err != nil {
+			fmt.Printf("Failed to reset network namespace: %v\n", err)
+		}
+		origNS.Close()
+	}()
+
+	// List the links in the target namespace
+	fmt.Printf("Existing links in netns %s\n", nsName)
+	links, err := netlink.LinkList()
+	if err != nil {
+		fmt.Printf("Failed to list links: %v\n", err)
+		return
+	}
+
+	for _, link := range links {
+		fmt.Printf("Link: %s\n", link.Attrs().Name)
+	}
+}
+
 func IntWatcher(namespace string) {
 
 	var nsHandle netns.NsHandle
 	var err error
-	if namespace == "" {
-		nsHandle = netns.None()
-		namespace = "None"
-	} else {
-		nsHandle, err = netns.GetFromName(namespace)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
 	// Create a channel to receive updates
 	links := make(chan netlink.LinkUpdate)
 
 	// Subscribe to link updates
 	done := make(chan struct{})
-	if err := netlink.LinkSubscribeAt(nsHandle, links, done); err != nil {
-		log.Fatal(err)
+
+	if namespace == "" {
+		nsHandle = netns.None()
+		namespace = "None"
+		if err := netlink.LinkSubscribeAt(nsHandle, links, done); err != nil {
+			fmt.Printf("LinkSubscribeAt failed for namespace %s, %v.  Waiting 1 second.\n", namespace, err)
+			return
+		}
+	} else {
+		subscribed := false
+		for i := 0; i < 30; i++ {
+			nsHandle, err = netns.GetFromName(namespace)
+			if err != nil {
+				fmt.Printf("Failed to get nsHandle from namespace %s, %v\n", namespace, err)
+				return
+			}
+
+			if err := netlink.LinkSubscribeAt(nsHandle, links, done); err != nil {
+				fmt.Printf("LinkSubscribeAt failed for namespace %s, %v.  Waiting 50 us...\n", namespace, err)
+				time.Sleep(50 * time.Microsecond)
+			} else {
+				subscribed = true
+				fmt.Printf("LinkSubscribeAt succeeded for namespace %s\n", namespace)
+				break
+			}
+		}
+		if !subscribed {
+			fmt.Printf("Failed to subscribe to link updates for namespace %s. Exiting.\n", namespace)
+			return
+		}
+
+		// List existing links
+		ListLinksInNamespace(namespace)
+
 	}
 
 	// Process updates
